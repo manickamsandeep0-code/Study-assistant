@@ -1,0 +1,242 @@
+import React, { useState, useCallback, useEffect } from 'react';
+import Header from './components/Header';
+import StudyInput from './components/StudyInput';
+import StudyPlanDisplay from './components/StudyPlanDisplay';
+              import './components/StudyPlanDisplay';
+import ResourceList from './components/ResourceList';
+import WellnessTips from './components/WellnessTips';
+import LoadingSpinner from './components/LoadingSpinner';
+import HistorySidebar from './components/HistorySidebar';
+import ChatHistory from './components/ChatHistory';
+import Login from './components/Login';
+import { generateStudyPlan } from './services/geminiService';
+import { signInWithGoogle, signOutUser, getCurrentUser, saveStudyPlan, getUserStudyPlans } from './services/authService';
+import { updateStudyPlan } from './services/studyPlanService';
+import type { StudyPlanResponse, HistoryItem, UserProfile } from './types';
+
+const App: React.FC = () => {
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [isHistoryVisible, setIsHistoryVisible] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+
+  // Theme management
+  useEffect(() => {
+    const storedTheme = localStorage.getItem('theme') as 'light' | 'dark' | null;
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    if (storedTheme) {
+      setTheme(storedTheme);
+    } else if (prefersDark) {
+      setTheme('dark');
+    }
+  }, []);
+
+  // Check for authenticated user on mount
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        const currentUser = await getCurrentUser();
+        if (currentUser) {
+          setUser({
+            id: currentUser.uid,
+            name: currentUser.displayName || '',
+            email: currentUser.email || '',
+            photoURL: currentUser.photoURL || '',
+            picture: currentUser.photoURL || ''
+          });
+
+          // Load user's study history
+          const userPlans = await getUserStudyPlans(currentUser.uid);
+          const historyItems = userPlans.map(plan => ({
+            id: plan.id,
+            userId: plan.userId,
+            goal: plan.goal,
+            response: plan.response,
+            timestamp: typeof plan.createdAt?.toMillis === 'function' 
+              ? plan.createdAt.toMillis() 
+              : Date.now()
+          }));
+          setHistory(historyItems);
+        }
+      } catch (error) {
+        console.error('Auth initialization error:', error);
+      }
+    };
+    initAuth();
+  }, []);
+
+  const handleLogin = async (userData: UserProfile) => {
+    setUser(userData);
+    const userPlans = await getUserStudyPlans(userData.id);
+    const historyItems = userPlans.map(plan => ({
+      id: plan.id,
+      userId: plan.userId,
+      goal: plan.goal,
+      response: plan.response,
+      timestamp: typeof plan.createdAt?.toMillis === 'function' 
+        ? plan.createdAt.toMillis() 
+        : Date.now()
+    }));
+    setHistory(historyItems);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOutUser();
+      setUser(null);
+      setHistory([]);
+      setSelectedPlanId(null);
+      localStorage.removeItem('theme');
+    } catch (error) {
+      console.error('Logout error:', error);
+      setError('Failed to sign out. Please try again.');
+    }
+  };
+
+  const handleGenerateStudyPlan = async (goal: string) => {
+    if (!user) {
+      setError('Please sign in to generate a study plan');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await generateStudyPlan(goal);
+      const planId = await saveStudyPlan(user.id, {
+        goal,
+        response,
+        userId: user.id,
+        createdAt: new Date()
+      });
+
+      const newPlan: HistoryItem = {
+        id: planId,
+        userId: user.id,
+        goal,
+        response,
+        timestamp: Date.now()
+      };
+
+      setHistory(prev => [newPlan, ...prev]);
+      setSelectedPlanId(planId);
+    } catch (error) {
+      setError('Failed to generate study plan. Please try again.');
+      console.error('Error generating study plan:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleThemeToggle = useCallback(() => {
+    setTheme(current => {
+      const newTheme = current === 'light' ? 'dark' : 'light';
+      localStorage.setItem('theme', newTheme);
+      return newTheme;
+    });
+  }, []);
+
+  if (!user) {
+    return <Login onLogin={handleLogin} />;
+  }
+
+  return (
+    <div className={`min-h-screen ${theme === 'dark' ? 'dark' : ''}`}>
+      <div className="flex flex-col min-h-screen bg-gray-50 dark:bg-gray-900">
+        <Header 
+          user={user}
+          onLogout={handleLogout}
+          theme={theme}
+          onToggleTheme={handleThemeToggle}
+          isHistoryVisible={isHistoryVisible}
+          onToggleHistory={() => setIsHistoryVisible(!isHistoryVisible)}
+          onLoginSuccess={() => {}}
+        />
+        
+        <div className="flex flex-1">
+          <ChatHistory 
+            history={history}
+            selectedPlanId={selectedPlanId}
+            onSelectPlan={setSelectedPlanId}
+          />
+          <main className="flex-1 container mx-auto px-4 py-8">
+          <StudyInput onGenerate={handleGenerateStudyPlan} isLoading={isLoading} />
+          
+          {error && (
+            <div className="mt-4 p-4 bg-red-100 text-red-700 rounded-md">
+              {error}
+            </div>
+          )}
+
+          {selectedPlanId && (
+            <div className="mt-8 grid gap-8 md:grid-cols-2">
+              <StudyPlanDisplay 
+                plan={history.find(h => h.id === selectedPlanId)?.response.studyPlan || []}
+                onToggleCompletion={async (index) => {
+                  if (!selectedPlanId) return;
+                  
+                  const currentPlan = history.find(h => h.id === selectedPlanId);
+                  if (!currentPlan) return;
+
+                  // Create a new response object with the updated study plan
+                  const updatedStudyPlan = [...currentPlan.response.studyPlan];
+                  updatedStudyPlan[index] = {
+                    ...updatedStudyPlan[index],
+                    completed: !updatedStudyPlan[index].completed
+                  };
+                  
+                  const updatedResponse = {
+                    ...currentPlan.response,
+                    studyPlan: updatedStudyPlan
+                  };
+
+                  try {
+                    if (!user) return;
+                    
+                    // Update in Firebase
+                    await updateStudyPlan(user.id, selectedPlanId, updatedResponse);
+                    
+                    // Update local state
+                    setHistory(prev => prev.map(item => 
+                      item.id === selectedPlanId
+                        ? { ...item, response: updatedResponse }
+                        : item
+                    ));
+                  } catch (error) {
+                    console.error('Failed to update study plan progress:', error);
+                    setError('Failed to update progress. Please try again.');
+                  }
+                }}
+              />
+              <div>
+                <ResourceList 
+                  resources={history.find(h => h.id === selectedPlanId)?.response.resources || []}
+                />
+                <WellnessTips 
+                  tips={history.find(h => h.id === selectedPlanId)?.response.wellnessTips || []}
+                />
+              </div>
+            </div>
+          )}
+        </main>
+
+        {isHistoryVisible && (
+          <HistorySidebar
+            history={history}
+            selectedPlanId={selectedPlanId}
+            onSelectPlan={setSelectedPlanId}
+            onClearHistory={() => setHistory([])}
+            isVisible={isHistoryVisible}
+          />
+        )}
+      </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;

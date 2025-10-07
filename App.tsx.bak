@@ -1,0 +1,349 @@
+import React, { useState, useCallback, useEffect } from 'react';
+import Header from './components/Header';
+import StudyInput from './components/StudyInput';
+import StudyPlanDisplay from './components/StudyPlanDisplay';
+import ResourceList from './components/ResourceList';
+import WellnessTips from './components/WellnessTips';
+import LoadingSpinner from './components/LoadingSpinner';
+import HistorySidebar from './components/HistorySidebar';
+import Login from './components/Login';
+import { generateStudyPlan } from './services/geminiService';
+import { signInWithGoogle, signOutUser, getCurrentUser, saveStudyPlan, getUserStudyPlans } from './services/authService';
+import type { StudyPlanResponse, HistoryItem, UserProfile } from './types'; { useState, useCallback, useEffect } from 'react';
+import Header from './components/Header';
+import StudyInput from './components/StudyInput';
+import StudyPlanDisplay from './components/StudyPlanDisplay';
+import ResourceList from './components/ResourceList';
+import WellnessTips from './components/WellnessTips';
+import LoadingSpinner from './components/LoadingSpinner';
+import HistorySidebar from './components/HistorySidebar';
+import SourcesDisplay from './components/SourcesDisplay';
+import { generateStudyPlan } from './services/geminiService';
+import { signInWithGoogle, signOutUser, getCurrentUser, saveStudyPlan, getUserStudyPlans } from './services/authService';
+import type { StudyPlanResponse, HistoryItem, UserProfile, StudyPlanDocument } from './types';
+import { BrainCircuitIcon } from './components/IconComponents';
+
+// A simple JWT decoder
+const decodeJwt = (token: string): any => {
+  try {
+    return JSON.parse(atob(token.split('.')[1]));
+  } catch (e) {
+    console.error("Error decoding JWT:", e);
+    return null;
+  }
+};
+
+import Login from './components/Login';
+
+const App: React.FC = () => {
+  const [user, setUser] = useState<UserProfile | null>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
+  const [isHistoryVisible, setIsHistoryVisible] = useState<boolean>(false);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+
+  const handleGenerateStudyPlan = async (goal: string) => {
+    if (!user) {
+      setError('Please sign in to generate a study plan');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const response = await generateStudyPlan(goal);
+      const planId = await saveStudyPlan(user.id, {
+        goal,
+        response,
+        userId: user.id,
+        createdAt: new Date()
+      });
+
+      setHistory(prev => [{
+        id: planId,
+        userId: user.id,
+        goal,
+        response,
+        timestamp: Date.now()
+      }, ...prev]);
+
+      setSelectedPlanId(planId);
+    } catch (error) {
+      setError('Failed to generate study plan. Please try again.');
+      console.error('Error generating study plan:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Check for authenticated user on mount
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        const currentUser = await getCurrentUser();
+        if (currentUser) {
+          const userData: UserProfile = {
+            id: currentUser.uid,
+            name: currentUser.displayName || '',
+            email: currentUser.email || '',
+            photoURL: currentUser.photoURL || ''
+          };
+          setUser(userData);
+          setIsAuthenticated(true);
+          
+          // Load user's study history
+          const userPlans = await getUserStudyPlans(currentUser.uid);
+          const historyItems = userPlans.map((plan: any) => ({
+            id: plan.id,
+            userId: plan.userId,
+            goal: plan.goal,
+            response: plan.response,
+            timestamp: plan.createdAt?.toMillis() || Date.now()
+          }));
+          setHistory(historyItems);
+        }
+      } catch (error) {
+        console.error('Auth initialization error:', error);
+        setIsAuthenticated(false);
+      }
+    };
+    initAuth();
+  }, []);
+
+  const handleLogin = async (userData: UserProfile) => {
+    setUser(userData);
+    setIsAuthenticated(true);
+    const userPlans = await getUserStudyPlans(userData.id);
+    const historyItems = userPlans.map((plan: any) => ({
+      id: plan.id,
+      userId: plan.userId,
+      goal: plan.goal,
+      response: plan.response,
+      timestamp: plan.createdAt?.toMillis() || Date.now()
+    }));
+    setHistory(historyItems);
+  };
+
+  const handleAuthLogout = async () => {
+    try {
+      await signOutUser();
+      setUser(null);
+      setIsAuthenticated(false);
+      setHistory([]);
+      setSelectedPlanId(null);
+      localStorage.clear(); // Clear any stored data
+    } catch (error) {
+      console.error('Logout error:', error);
+      setError('Failed to sign out. Please try again.');
+    }
+  };
+
+    // Theme management
+  useEffect(() => {
+    const storedTheme = localStorage.getItem('theme') as 'light' | 'dark' | null;
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    if (storedTheme) {
+      setTheme(storedTheme);
+    } else if (prefersDark) {
+      setTheme('dark');
+    }
+  }, []);
+
+  // Load user from localStorage on initial load
+  useEffect(() => {
+    const storedUser = localStorage.getItem('studyUser');
+    if (storedUser) {
+      setUser(JSON.parse(storedUser));
+    }
+  }, []);
+
+  // Load history when user changes or on initial load
+  useEffect(() => {
+    try {
+      const storedHistory = localStorage.getItem(historyKey);
+      if (storedHistory) {
+        const parsedHistory: HistoryItem[] = JSON.parse(storedHistory);
+        setHistory(parsedHistory);
+        if (parsedHistory.length > 0) {
+            setSelectedPlanId(parsedHistory[0].id);
+        } else {
+            setSelectedPlanId(null);
+        }
+      } else {
+        setHistory([]);
+        setSelectedPlanId(null);
+      }
+    } catch (error) {
+      console.error("Failed to load history from localStorage", error);
+      localStorage.removeItem(historyKey);
+      setHistory([]);
+    }
+  }, [user, historyKey]);
+
+  // Save history whenever it changes
+  useEffect(() => {
+    try {
+      localStorage.setItem(historyKey, JSON.stringify(history));
+    } catch (error) {
+      console.error("Failed to save history to localStorage", error);
+    }
+  }, [history, historyKey]);
+
+  const handleLoginSuccess = (credentialResponse: any) => {
+    const decoded: any = decodeJwt(credentialResponse.credential);
+    if (decoded) {
+      const userProfile: UserProfile = {
+        id: decoded.sub,
+        name: decoded.name,
+        email: decoded.email,
+        picture: decoded.picture,
+      };
+      setUser(userProfile);
+      localStorage.setItem('studyUser', JSON.stringify(userProfile));
+    }
+  };
+
+  const handleLogout = () => {
+    setUser(null);
+    setHistory([]);
+    setSelectedPlanId(null);
+    localStorage.removeItem('studyUser');
+    // Optional: Also clear anonymous history on logout if desired
+    // localStorage.removeItem('studyHistory_anonymous'); 
+    if (window.google) {
+        window.google.accounts.id.disableAutoSelect();
+    }
+  };
+
+  const handleGeneratePlan = useCallback(async (goal: string) => {
+    setIsLoading(true);
+    setError(null);
+    setSelectedPlanId(null);
+
+    try {
+      const plan = await generateStudyPlan(goal);
+      const newHistoryItem: HistoryItem = {
+        id: Date.now().toString(),
+        goal: goal,
+        response: plan,
+        timestamp: new Date().toISOString(),
+      };
+
+      setHistory(prev => [newHistoryItem, ...prev]);
+      setSelectedPlanId(newHistoryItem.id);
+    } catch (err) {
+      console.error("Error generating study plan:", err);
+      setError("Sorry, I couldn't create a study plan. The model might be busy. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const handleSelectPlan = (id: string) => {
+    setSelectedPlanId(id);
+    setIsHistoryVisible(false); // Close sidebar on mobile after selection
+  };
+
+  const handleClearHistory = () => {
+    if (window.confirm("Are you sure you want to clear this study history? This cannot be undone.")) {
+      setHistory([]);
+      setSelectedPlanId(null);
+      localStorage.removeItem(historyKey);
+    }
+  };
+
+  const handleToggleHistory = () => {
+    setIsHistoryVisible(prev => !prev);
+  };
+
+  const handleToggleTheme = () => {
+    setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));
+  };
+
+  const handleToggleCompletion = (dayIndex: number) => {
+    if (!selectedPlanId) return;
+
+    setHistory(prevHistory => {
+      return prevHistory.map(item => {
+        if (item.id === selectedPlanId) {
+          // Create a deep copy to avoid direct state mutation
+          const newStudyPlan = item.response.studyPlan.map(day => ({...day}));
+          const dayToUpdate = newStudyPlan[dayIndex];
+          dayToUpdate.completed = !dayToUpdate.completed;
+          
+          return {
+            ...item,
+            response: {
+              ...item.response,
+              studyPlan: newStudyPlan,
+            },
+          };
+        }
+        return item;
+      });
+    });
+  };
+  
+  const selectedPlan = history.find(item => item.id === selectedPlanId)?.response || null;
+
+  return (
+    <div className="h-screen bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-200 font-sans flex flex-col transition-colors duration-300">
+      <Header 
+        onToggleHistory={handleToggleHistory} 
+        isHistoryVisible={isHistoryVisible}
+        user={user}
+        onLoginSuccess={handleLoginSuccess}
+        onLogout={handleLogout}
+        theme={theme}
+        onToggleTheme={handleToggleTheme}
+      />
+      <div className="flex-1 flex overflow-hidden">
+        <HistorySidebar
+          history={history}
+          selectedPlanId={selectedPlanId}
+          onSelectPlan={handleSelectPlan}
+          onClearHistory={handleClearHistory}
+          isVisible={isHistoryVisible}
+        />
+        <main className="flex-1 p-4 md:p-8 overflow-y-auto">
+          <div className="max-w-4xl mx-auto">
+            <StudyInput onGenerate={handleGeneratePlan} isLoading={isLoading} />
+
+            {isLoading && <LoadingSpinner />}
+
+            {error && !isLoading && (
+              <div className="mt-8 bg-red-100 dark:bg-red-900/50 border border-red-300 dark:border-red-700 text-red-700 dark:text-red-300 px-4 py-3 rounded-lg text-center">
+                <p>{error}</p>
+              </div>
+            )}
+
+            {selectedPlan ? (
+              <div className="mt-8 space-y-8">
+                <StudyPlanDisplay plan={selectedPlan.studyPlan} onToggleCompletion={handleToggleCompletion} />
+                <ResourceList resources={selectedPlan.resources} />
+                <WellnessTips tips={selectedPlan.wellnessTips} />
+                {selectedPlan.sources && selectedPlan.sources.length > 0 && <SourcesDisplay sources={selectedPlan.sources} />}
+              </div>
+            ) : (
+              !isLoading && !error && (
+                <div className="text-center mt-12">
+                    <BrainCircuitIcon className="w-24 h-24 mx-auto mb-4 text-slate-400 dark:text-slate-600"/>
+                    <h2 className="text-2xl font-semibold text-slate-700 dark:text-slate-400">Ready to Supercharge Your Studies?</h2>
+                    <p className="mt-2 max-w-xl mx-auto text-slate-600 dark:text-slate-500">
+                        Enter your learning goal above to generate your first plan, or select a previous plan from the history panel.
+                    </p>
+                </div>
+              )
+            )}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+};
+
+export default App;
